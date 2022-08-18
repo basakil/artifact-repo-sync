@@ -1,0 +1,16 @@
+{
+  "name": "----",
+  "online": true,
+  "storage": {
+     "blobStoreName": "default",
+     "strictContentTypeValidation": false,
+     "writePolicy": "ALLOW"
+  },
+  "cleanup": null,
+  "component": {
+     "proprietaryComponents": false
+  },
+  "raw": {
+     "contentDisposition": "ATTACHMENT"
+  }
+}

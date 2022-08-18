@@ -42,6 +42,9 @@ class nexusReplicator():
         # Rest API for getting component with given repository.
         response = requests.get(f'{self.URL}/service/rest/v1/components', params=params, headers=self.headers, auth=('admin', self.PASSWD))
         
+        if(response.status_code == 404):
+            print(f'Repository {self.REPO} not found in {self.URL}/#admin/repository/repositories')
+            return
         # Parsing JSON response of getComponentAPI according to last modified date and. 
         # Storing components' name, sha1, lastModified, and downloadUrl in attrList. 
         # Storing parsed response in responses list.
@@ -56,7 +59,6 @@ class nexusReplicator():
         
         # REST API for storing repository settings
         getRepoSettings = requests.get(f'{self.URL}/service/rest/v1/repositorySettings', headers=self.headers, auth=('admin', self.PASSWD))
-        i = 0
         
         # Directory creation for exporting artifacts.
         folderPath = f'{os.getcwd()}/FolderToUpload/{self.REPO}'
@@ -72,6 +74,7 @@ class nexusReplicator():
                 if(settings.get("name") == self.REPO):
                     f.write(json.dumps(settings, indent=3))
         
+        i = 0
         # Writing to FolderToUpload
         for key in attrList: 
             writePath = f'{folderPath}/{key[1]}'
@@ -106,31 +109,25 @@ class nexusReplicator():
                         responseJson= json.loads(open(os.path.join(root, f), "r").read())
                         attrDict[responseJson.get("repository")][responseJson.get("assets")[0].get("checksum").get("sha1")]["name"] = responseJson.get("name").split("/")[-1]
                         attrDict[responseJson.get("repository")][responseJson.get("assets")[0].get("checksum").get("sha1")]["group"] = responseJson.get("group")                                 
-            
-            # Formatting RepositorySettings JSON to create exact match with exported artifact's repository.
-            f = json.loads(open(f'{i}/RepositorySettings', "r").read())
-            
-            # Popping out unnecessary attributes to POST REST API.
-            f.pop("url", None)
-            f.pop("format", None)
-            f.pop("type", None)
-            f['storage']['blobStoreName'] = 'default'
-            json_data = f
-            
+           
+            # Formatting Template JSON to create exact match with exported artifact's repository.
+            hostedTemplate = json.loads(open(f'{os.getcwd()}/repository-create-hosted-template.json', "r").read())
+            hostedTemplate['name'] = i.split('/')[-1]
+
             # Posting the repository whether if it exists or not.   
-            response = requests.post(f'{self.URL}/service/rest/v1/repositories/raw/hosted', headers=self.headers, json=json_data, auth=('admin', self.PASSWD))
+            response = requests.post(f'{self.URL}/service/rest/v1/repositories/raw/hosted', headers=self.headers, json=hostedTemplate, auth=('admin', self.PASSWD))
 
         # Creating API files to POST components.
         for i in attrDict.keys():
             files = {}
-            for idx, j in enumerate(attrDict[i].keys()):
-                files["raw.directory"] = ((None, attrDict[i][j].get("group")))
-                files[f'raw.asset{idx+1}'] = (open(f'{sourcePath}/{i}/{j}/{attrDict[i][j].get("name")}', 'rb'))
-                files[f'raw.asset{idx+1}.filename'] = ((None, attrDict[i][j].get("name")))
             params = {
                 'repository': i,
             }
-            response = requests.post(f'{self.URL}/service/rest/v1/components',params=params, headers=self.headers, files=files, auth=('admin', self.PASSWD))
+            for j in attrDict[i].keys():
+                files["raw.directory"] = ((None, attrDict[i][j].get("group")))
+                files[f'raw.asset1'] = (open(f'{sourcePath}/{i}/{j}/{attrDict[i][j].get("name")}', 'rb'))
+                files[f'raw.asset1.filename'] = ((None, attrDict[i][j].get("name")))
+                response = requests.post(f'{self.URL}/service/rest/v1/components',params=params, headers=self.headers, files=files, auth=('admin', self.PASSWD))
             
             # Check response status.
             if(200 <= response.status_code and response.status_code < 300):
