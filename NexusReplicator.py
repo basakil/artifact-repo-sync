@@ -12,35 +12,46 @@ class nexusReplicator():
         self.parser = argparse.ArgumentParser(
             description="""Example usage: 
                         \nFor import mode: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -i 
-                        \nFor export mode: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -e -r exampleRepositoryName -d 01.01.2022 """, formatter_class=argparse.RawTextHelpFormatter)
+                        \nFor export mode: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -e -r exampleRepositoryName -d 01.01.2022 
+                        \nFor export all mode: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -a -d 01.01.2022""", formatter_class=argparse.RawTextHelpFormatter)
         self.parser.add_argument('-u', metavar="URL", required=True, help = 'URL of nexus instance with port number.')
         self.parser.add_argument('-p', metavar="PASSWORD", required=True, help='Type nexus password of instance.')
         self.parser.add_argument('-r', metavar="REPOSITORY", help='Type repository name you want to export. (Case sensitive)')
         self.parser.add_argument('-d', metavar="DATE", help='Type begining date of exporting artifacts.')
         self.parser.add_argument('-i', action='store_true', help='Import mode.')
         self.parser.add_argument('-e', action='store_true', help='Export mode.')
-
+        self.parser.add_argument('-a', action='store_true', help='Export all mode.')
         self.args = self.parser.parse_args()
         self.URL = self.args.u[:-1] if  self.args.u[-1] == '/' else self.args.u
         self.PASSWD = self.args.p
         self.REPO = self.args.r
+        self.ALLCHECK = self.args.a
         
         # Checking proper usage of arguments.
         if(self.args.i and not self.args.e and not self.args.d and not self.args.r):
             self.importArtifact()
-        elif(self.args.e and not self.args.i and self.args.d and self.args.r):
+        elif((self.args.e and not self.args.i and self.args.d and self.args.r and not self.args.a) or (self.args.a and not self.args.r and self.args.d )):
             self.DATEB = datetime.datetime(int(self.args.d.split('.')[2]), int(self.args.d.split('.')[1]), int(self.args.d.split('.')[0]))
-            self.exportArtifact()
+            self.exportArtifactHandler()
         else:
             self.parser.print_help()
 
+    def exportArtifactHandler(self):  
+        if(self.ALLCHECK):       
+            responseForAll = requests.get(f'{self.URL}/service/rest/v1/repositories', headers=self.headers, auth=('admin', self.PASSWD)).json()
+            for repo in responseForAll:
+                if(repo.get("type") != "group"):
+                    self.REPO = repo.get("name")
+                    self.exportArtifact()
+        else:
+            self.exportArtifact()  
+    
     def exportArtifact(self):
-        params = {
+        self.params = {
             'repository': self.REPO
-        }  
-
+        }
         # Rest API for getting component with given repository.
-        response = requests.get(f'{self.URL}/service/rest/v1/components', params=params, headers=self.headers, auth=('admin', self.PASSWD))
+        response = requests.get(f'{self.URL}/service/rest/v1/components', params=self.params, headers=self.headers, auth=('admin', self.PASSWD))
         
         if(response.status_code == 404):
             print(f'Repository {self.REPO} not found in {self.URL}/#admin/repository/repositories')
@@ -49,45 +60,37 @@ class nexusReplicator():
         # Storing components' name, sha1, lastModified, and downloadUrl in attrList. 
         # Storing parsed response in responses list.
         items = response.json().get("items")
-        attrList = []
-        responses = []
-        for item in items:         
-            for asset in item['assets']:
-                if(self.DATEB < parse(asset['lastModified']).replace(tzinfo=None) and item.get("name") != "."):
-                    responses.append(json.dumps(item, indent=3))
-                    attrList.append((item.get("name").split("/")[-1], asset.get("checksum").get("sha1"), asset.get("lastModified"), asset.get("downloadUrl")))
-        
-        # REST API for storing repository settings
-        getRepoSettings = requests.get(f'{self.URL}/service/rest/v1/repositorySettings', headers=self.headers, auth=('admin', self.PASSWD))
-        
-        # Directory creation for exporting artifacts.
-        folderPath = f'{os.getcwd()}/FolderToUpload/{self.REPO}'
-        os.makedirs(folderPath, exist_ok=True)
-        
-        # Writing arguments that NexusReplicator has been executed.
-        with open(f'{folderPath}/arguments', 'w') as f:
-            f.write(f'URL: {self.URL}\nPassword: {self.PASSWD}\nRepository: {self.REPO}\nBeginning Time: {self.DATEB}\nEnd Time: {datetime.datetime.now()}\n')
-        
-        # Writing repository settings
-        with open(f'{folderPath}/RepositorySettings', 'w') as f:
-            for settings in getRepoSettings.json():
-                if(settings.get("name") == self.REPO):
-                    f.write(json.dumps(settings, indent=3))
-        
-        i = 0
-        # Writing to FolderToUpload
-        for key in attrList: 
-            writePath = f'{folderPath}/{key[1]}'
-            os.makedirs(writePath, exist_ok=True)
-            r = requests.get(key[3], auth=('admin', self.PASSWD), allow_redirects=True)
-            # Copying requested artifact. 
-            with open(f'{writePath}/{key[0]}', 'wb') as f:
-                f.write(r.content)
-            # Copying request iself.    
-            with open(f'{writePath}/response.json', 'w') as f:
-                f.write(str(responses[i]))
-                i+=1
-            print(f'Files related to {key[0]} are copied to: {writePath}')
+        if(items != [] and (len(items) == 1 and items[0].get("name")) != '.'):
+            attrList = []
+            responses = []
+            for item in items:         
+                for asset in item['assets']:
+                    if(self.DATEB < parse(asset['lastModified']).replace(tzinfo=None) and item.get("name") != "."):
+                        responses.append(json.dumps(item, indent=3))
+                        attrList.append((item.get("name").split("/")[-1], asset.get("checksum").get("sha1"), asset.get("lastModified"), asset.get("downloadUrl")))
+                
+            # Directory creation for exporting artifacts.
+            folderPath = f'{os.getcwd()}/FolderToUpload/{self.REPO}'
+            os.makedirs(folderPath, exist_ok=True)
+            
+            # Writing arguments that NexusReplicator has been executed.
+            with open(f'{folderPath}/arguments', 'w') as f:
+                f.write(f'URL: {self.URL}\nPassword: {self.PASSWD}\nRepository: {self.REPO}\nBeginning Time: {self.DATEB}\nEnd Time: {datetime.datetime.now()}\n')
+            
+            i = 0
+            # Writing to FolderToUpload
+            for key in attrList: 
+                writePath = f'{folderPath}/{key[1]}'
+                os.makedirs(writePath, exist_ok=True)
+                r = requests.get(key[3], auth=('admin', self.PASSWD), allow_redirects=True)
+                # Copying requested artifact. 
+                with open(f'{writePath}/{key[0]}', 'wb') as f:
+                    f.write(r.content)
+                # Copying request iself.    
+                with open(f'{writePath}/response.json', 'w') as f:
+                    f.write(str(responses[i]))
+                    i+=1
+                print(f'Files related to {key[0]} are copied to: {writePath}')
 
         
     def importArtifact(self):
