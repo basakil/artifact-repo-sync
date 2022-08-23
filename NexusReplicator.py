@@ -35,9 +35,11 @@ class nexusReplicator():
             self.exportArtifactHandler()
         else:
             self.parser.print_help()
-
+    
+    # To export all artifacts with -a argument.
     def exportArtifactHandler(self):  
         if(self.ALLCHECK):       
+            #REST API for listing all repositories.
             responseForAll = requests.get(f'{self.URL}/service/rest/v1/repositories', headers=self.headers, auth=('admin', self.PASSWD)).json()
             for repo in responseForAll:
                 if(repo.get("type") != "group"):
