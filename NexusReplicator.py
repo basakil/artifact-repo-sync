@@ -1,4 +1,4 @@
-import requests, argparse, datetime, os, json, glob
+import requests, argparse, datetime, os, json, glob, subprocess, tarfile
 from dateutil.parser import parse
 from collections import defaultdict
 
@@ -13,7 +13,8 @@ class nexusReplicator():
             description="""Example usage: 
                         \nFor import mode: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -i 
                         \nFor export mode: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -e -r exampleRepositoryName -d 01.01.2022 
-                        \nFor export all mode: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -a -d 01.01.2022""", formatter_class=argparse.RawTextHelpFormatter)
+                        \nFor export all mode: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -a -d 01.01.2022
+                        \nFor export all docker registries: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -a -d 01.01.2022 --docker""", formatter_class=argparse.RawTextHelpFormatter)
         self.parser.add_argument('-u', metavar="URL", required=True, help = 'URL of nexus instance with port number.')
         self.parser.add_argument('-p', metavar="PASSWORD", required=True, help='Type nexus password of instance.')
         self.parser.add_argument('-r', metavar="REPOSITORY", help='Type repository name you want to export. (Case sensitive)')
@@ -21,11 +22,14 @@ class nexusReplicator():
         self.parser.add_argument('-i', action='store_true', help='Import mode.')
         self.parser.add_argument('-e', action='store_true', help='Export mode.')
         self.parser.add_argument('-a', action='store_true', help='Export all mode.')
+        self.parser.add_argument('--docker', action='store_true', help='Export all docker images.')
         self.args = self.parser.parse_args()
         self.URL = self.args.u[:-1] if  self.args.u[-1] == '/' else self.args.u
         self.PASSWD = self.args.p
         self.REPO = self.args.r
         self.ALLCHECK = self.args.a
+        self.DOCKERCHECK = self.args.docker
+        self.HTTP = None
         
         # Checking proper usage of arguments.
         if(self.args.i and not self.args.e and not self.args.d and not self.args.r):
@@ -40,11 +44,15 @@ class nexusReplicator():
     def exportArtifactHandler(self):  
         if(self.ALLCHECK):       
             #REST API for listing all repositories.
-            responseForAll = requests.get(f'{self.URL}/service/rest/v1/repositories', headers=self.headers, auth=('admin', self.PASSWD)).json()
+            responseForAll = requests.get(f'{self.URL}/service/rest/v1/repositorySettings', headers=self.headers, auth=('admin', self.PASSWD)).json()
             for repo in responseForAll:
-                if(repo.get("type") != "group"):
+                if(repo.get("type") != "group" and repo.get("format") != "docker" and not self.DOCKERCHECK):
                     self.REPO = repo.get("name")
                     self.exportArtifact()
+                elif(repo.get("format") == "docker" and self.DOCKERCHECK):
+                    self.REPO = repo.get("name")
+                    self.HTTP = f'{self.URL.split(":")[1][2:]}:{str(repo.get("docker").get("httpPort"))}/'
+                    self.exportDocker()
         else:
             self.exportArtifact()  
     
@@ -141,5 +149,37 @@ class nexusReplicator():
             else:
                 print(f'An error occurred. Response code {response.status_code} {response.content}')
 
+
+    def exportDocker(self):
+        self.params = {
+            'repository': self.REPO
+        }
+        # Rest API for getting component with given repository.
+        response = requests.get(f'{self.URL}/service/rest/v1/components', params=self.params, headers=self.headers, auth=('admin', self.PASSWD))
+        
+        if(response.status_code == 404):
+            print(f'Repository {self.REPO} not found in {self.URL}/#admin/repository/repositories')
+            return
+        folderPath = f'{os.getcwd()}/DockerImages'
+        os.makedirs(f'{folderPath}/ExtractedFiles', exist_ok=True)
+        # Parsing JSON response of getComponentAPI according to last modified date and. 
+        # Storing components' name, sha1, lastModified, and downloadUrl in attrList. 
+        # Storing parsed response in responses list.
+        items = response.json().get("items")
+        if(items != [] and (len(items) == 1 and items[0].get("name")) != '.'):
+            attrList = []
+            for item in items:         
+                for asset in item['assets']:
+                    if(self.DATEB < parse(asset['lastModified']).replace(tzinfo=None) and item.get("name") != "."):
+                        imageName = f'{self.HTTP}{item.get("name")}:{item.get("version")}'
+                        imagePath = f'{folderPath}/{imageName.replace("/", "-")}.tar'
+                        subprocess.run(["docker", "login", self.HTTP, "--username=admin", f'--password={self.PASSWD}'])
+                        subprocess.run(["docker", "pull", imageName])
+                        subprocess.run(["docker", "save", "-o", imagePath, imageName])
+                        imageTar = tarfile.open(imagePath)
+                        imageTar.extractall(f'{folderPath}/ExtractedFiles/{imageName.replace("/", "-")}')
+                        os.remove(imagePath)
+                        attrList.append((item.get("name").split("/")[-1], item.get("version"), asset.get("lastModified"), imagePath))  
+                        
 if __name__ == '__main__':  
     n = nexusReplicator()
