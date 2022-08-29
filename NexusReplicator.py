@@ -1,4 +1,4 @@
-import requests, argparse, datetime, os, json, glob, subprocess, tarfile
+import requests, argparse, datetime, os, json, glob, subprocess, tarfile, shutil
 from dateutil.parser import parse
 from collections import defaultdict
 
@@ -30,6 +30,8 @@ class nexusReplicator():
         self.ALLCHECK = self.args.a
         self.DOCKERCHECK = self.args.docker
         self.HTTP = None
+        self.MANIFESTS = []
+        self.LAYERSDICT = {}
         
         # Checking proper usage of arguments.
         if(self.args.i and not self.args.e and not self.args.d and not self.args.r):
@@ -151,6 +153,7 @@ class nexusReplicator():
 
 
     def exportDocker(self):
+        subprocess.run(["docker", "login", self.HTTP, "--username=admin", f'--password={self.PASSWD}'])
         self.params = {
             'repository': self.REPO
         }
@@ -161,25 +164,72 @@ class nexusReplicator():
             print(f'Repository {self.REPO} not found in {self.URL}/#admin/repository/repositories')
             return
         folderPath = f'{os.getcwd()}/DockerImages'
-        os.makedirs(f'{folderPath}/ExtractedFiles', exist_ok=True)
+        os.makedirs(f'{folderPath}/NewImages', exist_ok=True)
+        os.makedirs(f'{folderPath}/OldImages', exist_ok=True)
         # Parsing JSON response of getComponentAPI according to last modified date and. 
         # Storing components' name, sha1, lastModified, and downloadUrl in attrList. 
         # Storing parsed response in responses list.
         items = response.json().get("items")
+        attrList = []
+        oldImages = []
         if(items != [] and (len(items) == 1 and items[0].get("name")) != '.'):
-            attrList = []
             for item in items:         
                 for asset in item['assets']:
                     if(self.DATEB < parse(asset['lastModified']).replace(tzinfo=None) and item.get("name") != "."):
-                        imageName = f'{self.HTTP}{item.get("name")}:{item.get("version")}'
-                        imagePath = f'{folderPath}/{imageName.replace("/", "-")}.tar'
-                        subprocess.run(["docker", "login", self.HTTP, "--username=admin", f'--password={self.PASSWD}'])
-                        subprocess.run(["docker", "pull", imageName])
-                        subprocess.run(["docker", "save", "-o", imagePath, imageName])
-                        imageTar = tarfile.open(imagePath)
-                        imageTar.extractall(f'{folderPath}/ExtractedFiles/{imageName.replace("/", "-")}')
-                        os.remove(imagePath)
-                        attrList.append((item.get("name").split("/")[-1], item.get("version"), asset.get("lastModified"), imagePath))  
-                        
+                        newImageName = f'{self.HTTP}{item.get("name")}:{item.get("version")}'
+                        newImagePath = f'{folderPath}/NewImages/{newImageName.replace("/", "-")}.tar'
+                        # subprocess.run(["docker", "pull", imageName])
+                        subprocess.run(["docker", "save", "-o", newImagePath, newImageName])
+                        imageTar = tarfile.open(newImagePath)
+                        imageTar.extractall(f'{folderPath}/NewImages/{newImageName.replace("/", "-")}')
+                        os.remove(newImagePath)
+                        attrList.append((item.get("name").split("/")[-1], item.get("version"), asset.get("lastModified"), newImagePath))  
+
+                    elif(self.DATEB > parse(asset['lastModified']).replace(tzinfo=None) and item.get("name") != "."):
+                        oldImageName = f'{self.HTTP}{item.get("name")}:{item.get("version")}'
+                        oldImagePath = f'{folderPath}/OldImages/{oldImageName.replace("/", "-")}.tar'
+                        subprocess.run(["docker", "save", "-o", oldImagePath, oldImageName])
+                        imageTar = tarfile.open(oldImagePath)
+                        with imageTar as tar:
+                            for member in tar:
+                                if member.name.endswith('manifest.json'):
+                                    self.MANIFESTS.append(json.load(tar.extractfile(member)))
+                                    break
+                        oldImages.append((item.get("name").split("/")[-1], item.get("version"), parse(asset.get("lastModified")).replace(tzinfo=None)))
+        
+        shutil.rmtree(f'{folderPath}/OldImages/')
+        for manifestsList in self.MANIFESTS:
+            for manifests in manifestsList:
+                for layers in manifests['Layers']:
+                    self.LAYERSDICT[layers.split("/")[0]] = manifests['RepoTags']
+            
+        for root,d_names, f_names in os.walk(f'{folderPath}/NewImages'):
+            for d in d_names:
+                if d in self.LAYERSDICT:
+                    with open(f'{root}/LayersFromImages', 'a') as f:
+                        f.write(str(f'{d}:{self.LAYERSDICT[d]}\n'))
+                    shutil.rmtree(f'{root}/{d}', ignore_errors=True) 
+            if(root.split("/")[-2] == "NewImages"):
+                tarfile.open(f'{root}.tar', "w").add(root, arcname=os.path.basename(f'{root}/'))
+                shutil.rmtree(root)
+                    
+        
+        # Ortak olan Imagelar ve Farklı olan Imagelar
+
+# Yapılacaklar:
+# -Export Ederken-
+# (DONE) Girilen tarihten sonra ve önce olan imageları ayrı klasörlerde savele
+# (DONE) Tarların içindeki manifest dosyalarını karşılaştırarak delta oluştur.
+#       (DONE) Ortak olan imageları {sha:image} şeklinde tutabilirsin.
+#       (DONE) Old Manifestlerin içindekileri klasörle kıyaslayıp aynı olanları sil 
+# Delta klasörleri haricindekileri sil ve deltaları tarla
+# -Import Ederken-
+# Deltaları extractle
+# Delta tarlarda yazan imageları savele ve gereken layerları delta'nın içine at
+# Son savelenen image'ın dosyalarını sil
+# Deltayı tarlayıp dockera loadla
+# Loadlanan image'ı nexus'a pushla
+
+
 if __name__ == '__main__':  
     n = nexusReplicator()
