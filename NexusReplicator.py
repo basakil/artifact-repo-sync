@@ -14,7 +14,8 @@ class nexusReplicator():
                         \nFor import mode: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -i 
                         \nFor export mode: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -e -r exampleRepositoryName -d 01.01.2022 
                         \nFor export all mode: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -a -d 01.01.2022
-                        \nFor export all docker registries: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -a -d 01.01.2022 --docker""", formatter_class=argparse.RawTextHelpFormatter)
+                        \nFor export all docker registries: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -a -d 01.01.2022 --docker
+                        \nFor import all docker registries: python3 NexusReplicator.py -u http://localhost:8081 -p 1234 -i --docker""", formatter_class=argparse.RawTextHelpFormatter)
         self.parser.add_argument('-u', metavar="URL", required=True, help = 'URL of nexus instance with port number.')
         self.parser.add_argument('-p', metavar="PASSWORD", required=True, help='Type nexus password of instance.')
         self.parser.add_argument('-r', metavar="REPOSITORY", help='Type repository name you want to export. (Case sensitive)')
@@ -34,11 +35,13 @@ class nexusReplicator():
         self.LAYERSDICT = {}
         
         # Checking proper usage of arguments.
-        if(self.args.i and not self.args.e and not self.args.d and not self.args.r):
+        if(self.args.i and not self.args.e and not self.args.d and not self.args.r and not self.args.docker):
             self.importArtifact()
         elif((self.args.e and not self.args.i and self.args.d and self.args.r and not self.args.a) or (self.args.a and not self.args.r and self.args.d )):
             self.DATEB = datetime.datetime(int(self.args.d.split('.')[2]), int(self.args.d.split('.')[1]), int(self.args.d.split('.')[0]))
             self.exportArtifactHandler()
+        elif(self.args.i and not self.args.e and not self.args.d and not self.args.r and self.args.docker):
+            self.importDocker()
         else:
             self.parser.print_help()
     
@@ -178,7 +181,7 @@ class nexusReplicator():
                     if(self.DATEB < parse(asset['lastModified']).replace(tzinfo=None) and item.get("name") != "."):
                         newImageName = f'{self.HTTP}{item.get("name")}:{item.get("version")}'
                         newImagePath = f'{folderPath}/NewImages/{newImageName.replace("/", "-")}.tar'
-                        # subprocess.run(["docker", "pull", imageName])
+                        subprocess.run(["docker", "pull", newImageName])
                         subprocess.run(["docker", "save", "-o", newImagePath, newImageName])
                         imageTar = tarfile.open(newImagePath)
                         imageTar.extractall(f'{folderPath}/NewImages/{newImageName.replace("/", "-")}')
@@ -188,6 +191,7 @@ class nexusReplicator():
                     elif(self.DATEB > parse(asset['lastModified']).replace(tzinfo=None) and item.get("name") != "."):
                         oldImageName = f'{self.HTTP}{item.get("name")}:{item.get("version")}'
                         oldImagePath = f'{folderPath}/OldImages/{oldImageName.replace("/", "-")}.tar'
+                        subprocess.run(["docker", "pull", oldImageName])
                         subprocess.run(["docker", "save", "-o", oldImagePath, oldImageName])
                         imageTar = tarfile.open(oldImagePath)
                         with imageTar as tar:
@@ -210,11 +214,59 @@ class nexusReplicator():
                         f.write(str(f'{d}:{self.LAYERSDICT[d]}\n'))
                     shutil.rmtree(f'{root}/{d}', ignore_errors=True) 
             if(root.split("/")[-2] == "NewImages"):
-                tarfile.open(f'{root}.tar', "w").add(root, arcname=os.path.basename(f'{root}/'))
+                tarfile.open(f'{root}.tar.gz', "w:gz").add(root, arcname=os.path.basename(f'{root}/'))
                 shutil.rmtree(root)
                     
-        
-        # Ortak olan Imagelar ve Farklı olan Imagelar
+    def importDocker(self):
+        sourcePath = f'{os.getcwd()}/DockerImages/NewImages'
+        savedPath = f'{os.getcwd()}/DockerImages/SavedImages'
+        imageNames = {}
+
+        if not os.path.exists(savedPath):
+            os.makedirs(savedPath)
+
+        # To make sure it checks LayersFromImages
+        layersFlag = True
+        while(layersFlag):
+            for root,d_names, f_names in os.walk(sourcePath):
+                for files in f_names:     
+                    if(files.endswith(".tar.gz")):
+                        tarfile.open(f'{root}/{files}').extractall(f'{root}/{files[0:-7]}')                    
+                        os.remove(f'{root}/{files}')
+                    if(files.endswith("LayersFromImages")):
+                        layersFlag = False
+                        with open(f'{root}/{files}') as f:
+                            valtemp = None
+                            for line in f:
+                                (key, val) = line.split("['")
+                                imagePath = f'{savedPath}/{val[0:-3].replace("/", "-")}.tar'
+                                dirSource = f'{imagePath[:-4]}/{key[0:-1]}'
+                                if(valtemp == val and key[0:-1]):
+                                    shutil.copytree(dirSource, f'{root}/{key[0:-1]}')
+                                else:
+                                    if(val[0:-3] in imageNames):
+                                        if(root.split("/")[-1] not in imageNames[val[0:-3]]):
+                                            shutil.copytree(dirSource, f'{root}/{key[0:-1]}')
+                                    else:
+                                        subprocess.run(["docker", "save", "-o", imagePath, val[0:-3]])
+                                        tarfile.open(imagePath).extractall(f'{imagePath[:-4]}')                    
+                                        os.remove(imagePath)
+                                        shutil.copytree(dirSource, f'{root}/{key[0:-1]}')                                            
+                                valtemp = val
+                        os.remove(f'{root}/{files}')
+                                
+        shutil.rmtree(savedPath)
+
+        for root,d_names, f_names in os.walk(sourcePath):
+            if(root.split("/")[-2] == "NewImages"):
+                tarfile.open(f'{root}.tar.gz', "w:gz").add(root, arcname=os.path.basename(f'{root}/'))
+                subprocess.run(["docker", "load", "--input", f'{root}.tar.gz'])
+                shutil.rmtree(root)
+
+        print("-----------------------------------------")
+        print("Finished Successfully")
+        print("-----------------------------------------")
+
 
 # Yapılacaklar:
 # -Export Ederken-
@@ -222,12 +274,12 @@ class nexusReplicator():
 # (DONE) Tarların içindeki manifest dosyalarını karşılaştırarak delta oluştur.
 #       (DONE) Ortak olan imageları {sha:image} şeklinde tutabilirsin.
 #       (DONE) Old Manifestlerin içindekileri klasörle kıyaslayıp aynı olanları sil 
-# Delta klasörleri haricindekileri sil ve deltaları tarla
+# (DONE) Delta klasörleri haricindekileri sil ve deltaları tarla
 # -Import Ederken-
-# Deltaları extractle
-# Delta tarlarda yazan imageları savele ve gereken layerları delta'nın içine at
-# Son savelenen image'ın dosyalarını sil
-# Deltayı tarlayıp dockera loadla
+# (DONE) Deltaları extractle
+# (DONE) Delta tarlarda yazan imageları savele ve gereken layerları delta'nın içine at
+# (DONE) Son savelenen image'ın dosyalarını sil
+# (ERROR)Deltayı tarlayıp dockera loadla
 # Loadlanan image'ı nexus'a pushla
 
 
