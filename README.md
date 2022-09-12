@@ -6,9 +6,9 @@ This readme (and referenced stuff) is/are our source of truth for all things rel
 
 <br>
 
-# Project Goal
+# Functions
 
-The solution is implemented in two steps: (Smart) Import (the new artifacts) from the source repo and export the imported artifacts to the target repo. Here are the initial features list for this project:
+The solution is implemented in two steps: (Smart) Export (the new artifacts) from the source repo and import the exported artifacts to the target repo. Here is the initial features list for this project:
 
 - [x] Export
   - [x] All at once
